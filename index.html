@@ -1,0 +1,1386 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>World Cup Bracket Pool</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+html,body,#root{margin:0;height:100%;background:#F0EBDC;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+window.storage={
+ async get(k){return {value:localStorage.getItem(k)};},
+ async set(k,v){localStorage.setItem(k,v);}
+};
+</script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+<script type="text/babel">
+const {useState,useEffect,useCallback} = React;
+const RESULTS_PASSWORD = "WholesomeCuppers";
+
+
+// ---------- Constants ----------
+
+const ROUNDS = [
+  { key: "r16", label: "Round of 32", points: 20 },
+  { key: "qf", label: "Round of 16", points: 30 },
+  { key: "sf", label: "Quarter-finals", points: 40 },
+  { key: "final", label: "Semi-finals", points: 75 },
+  { key: "champion", label: "Final", points: 100 },
+];
+
+const ROUND_KEYS = ROUNDS.map((r) => r.key);
+
+// Actual Round of 32 matchups, in bracket order. The "r16" picks field
+// represents each person's prediction for who wins each of these games.
+const R32_MATCHUPS = [
+  ["Germany", "Paraguay"],
+  ["France", "Sweden"],
+  ["South Africa", "Canada"],
+  ["Netherlands", "Morocco"],
+  ["Portugal", "Croatia"],
+  ["Spain", "Austria"],
+  ["USA", "Bosnia and Herzegovina"],
+  ["Belgium", "Senegal"],
+  ["Brazil", "Japan"],
+  ["Ivory Coast", "Norway"],
+  ["Mexico", "Ecuador"],
+  ["England", "DR Congo"],
+  ["Argentina", "Cape Verde"],
+  ["Australia", "Egypt"],
+  ["Switzerland", "Algeria"],
+  ["Colombia", "Ghana"],
+];
+
+const matchTimes = {
+  r32: [
+    "Jun 28, 3:00 PM",
+    "Jun 29, 1:00 PM",
+    "Jun 29, 4:30 PM",
+    "Jun 29, 9:00 PM",
+    "Jun 30, 1:00 PM",
+    "Jun 30, 5:00 PM",
+    "Jun 30, 9:00 PM",
+    "Jul 1, 12:00 PM",
+    "Jul 1, 4:00 PM",
+    "Jul 1, 8:00 PM",
+    "Jul 2, 3:00 PM",
+    "Jul 2, 7:00 PM",
+    "Jul 2, 11:00 PM",
+    "Jul 3, 2:00 PM",
+    "Jul 3, 6:00 PM",
+    "Jul 3, 9:30 PM",
+  ],
+
+  r16: [
+    "Jul 4, 1:00 PM",
+    "Jul 4, 5:00 PM",
+    "Jul 5, 4:00 PM",
+    "Jul 5, 8:00 PM",
+    "Jul 6, 3:00 PM",
+    "Jul 6, 8:00 PM",
+    "Jul 7, 12:00 PM",
+    "Jul 7, 4:00 PM",
+  ],
+
+  qf: [
+    "Jul 9, 4:00 PM",
+    "Jul 10, 3:00 PM",
+    "Jul 11, 5:00 PM",
+    "Jul 11, 9:00 PM",
+  ],
+
+  sf: [
+    "Jul 14, 3:00 PM",
+    "Jul 15, 3:00 PM",
+  ],
+
+  final: [
+    "Jul 18, 5:00 PM", // Third Place
+    "Jul 19, 3:00 PM", // Final
+  ],
+};
+
+const STORAGE_KEY = "73night";
+const SEED_VERSION = 3;
+
+const emptyPicks = () => ({
+  r16: Array(16).fill(""),
+  qf: Array(8).fill(""),
+  sf: Array(4).fill(""),
+  final: Array(2).fill(""),
+  champion: [""],
+});
+
+const emptyResults = () => ({
+  r16: [
+    "Paraguay",
+    "France",
+    "Canada",
+    "Morocco",
+    "Portugal",
+    "Spain",
+    "USA",
+    "Belgium",
+    "Brazil",
+    "Norway",
+    "Mexico",
+    "England",
+    "Argentina",
+    "Egypt",
+    "Switzerland",
+    "Colombia",
+  ],
+  qf: [
+    "",
+    "Morocco",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+  ],
+  sf: [
+    "",
+    "",
+    "",
+    ""
+  ],
+  final: [
+    "",
+    ""
+  ],
+  champion: [""],
+});
+
+// Final score strings (e.g. "2-1"), aligned by index with results/picks.
+// Purely for display alongside the winner already recorded in `results`.
+const emptyScores = () => ({
+  r16: [
+    "1-1",
+    "3-0",
+    "0-1",
+    "1-1",
+    "2-1",
+    "3-0",
+    "2-0",
+    "3-2",
+    "2-1",
+    "1-2",
+    "2-0",
+    "2-1",
+    "3-2",
+    "1-1",
+    "2-0",
+    "1-0",
+  ],
+  qf: [
+    "",
+    "3-0",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+  ],
+  sf: [
+    "",
+    "",
+    "",
+    ""
+  ],
+  final: [
+    "",
+    ""
+  ],
+  champion: [""],
+});
+
+const DEFAULT_PEOPLE = [
+  "lukefinley",
+  "Johnny-Brackets",
+  "Lucky Lass",
+  "I did not know adults play soccer",
+  "Zachs Winner POV",
+  "ColeHam17",
+];
+
+const PRESET_PICKS = {
+  lukefinley: {
+    r16: [
+      "Germany", "France", "Canada", "Netherlands", "Portugal", "Spain", "USA", "Senegal",
+      "Brazil", "Norway", "Ecuador", "England", "Argentina", "Australia", "Algeria", "Colombia",
+    ],
+    qf: ["France", "Netherlands", "Spain", "USA", "Norway", "England", "Argentina", "Colombia"],
+    sf: ["France", "Spain", "Norway", "Argentina"],
+    final: ["France", "Argentina"],
+    champion: ["France"],
+  },
+  "Johnny-Brackets": {
+    r16: [
+      "Germany", "France", "Canada", "Netherlands", "Portugal", "Spain", "USA", "Belgium",
+      "Brazil", "Norway", "Ecuador", "England", "Argentina", "Australia", "Switzerland", "Colombia",
+    ],
+    qf: ["France", "Netherlands", "Portugal", "Belgium", "Brazil", "England", "Argentina", "Colombia"],
+    sf: ["France", "Portugal", "England", "Argentina"],
+    final: ["Portugal", "England"],
+    champion: ["Portugal"],
+  },
+  "Lucky Lass": {
+    r16: [
+      "Germany", "France", "Canada", "Netherlands", "Croatia", "Spain", "USA", "Belgium",
+      "Brazil", "Norway", "Mexico", "England", "Argentina", "Australia", "Switzerland", "Ghana",
+    ],
+    qf: ["France", "Canada", "Croatia", "USA", "Brazil", "Mexico", "Argentina", "Switzerland"],
+    sf: ["France", "USA", "Mexico", "Argentina"],
+    final: ["France", "Argentina"],
+    champion: ["France"],
+  },
+  "I did not know adults play soccer": {
+    r16: [
+      "Germany", "France", "South Africa", "Morocco", "Portugal", "Spain", "USA", "Belgium",
+      "Brazil", "Norway", "Mexico", "England", "Argentina", "Egypt", "Switzerland", "Colombia",
+    ],
+    qf: ["France", "Morocco", "Spain", "USA", "Brazil", "Mexico", "Argentina", "Switzerland"],
+    sf: ["France", "Spain", "Brazil", "Argentina"],
+    final: ["France", "Argentina"],
+    champion: ["France"],
+  },
+  "Zachs Winner POV": {
+    r16: [
+      "Germany", "France", "Canada", "Netherlands", "Portugal", "Spain", "USA", "Belgium",
+      "Brazil", "Norway", "Ecuador", "England", "Argentina", "Australia", "Switzerland", "Colombia",
+    ],
+    qf: ["Germany", "Canada", "Portugal", "USA", "Brazil", "England", "Argentina", "Colombia"],
+    sf: ["Germany", "Portugal", "Brazil", "Argentina"],
+    final: ["Germany", "Brazil"],
+    champion: ["Germany"],
+  },
+  ColeHam17: {
+    r16: [
+      "Germany", "France", "Canada", "Netherlands", "Portugal", "Spain", "USA", "Belgium",
+      "Brazil", "Norway", "Mexico", "England", "Argentina", "Egypt", "Switzerland", "Colombia",
+    ],
+    qf: ["France", "Netherlands", "Spain", "USA", "Brazil", "Mexico", "Argentina", "Colombia"],
+    sf: ["France", "Spain", "Mexico", "Argentina"],
+    final: ["France", "Mexico"],
+    champion: ["France"],
+  },
+};
+
+function defaultState() {
+  const people = {};
+  DEFAULT_PEOPLE.forEach((name) => {
+    const preset = PRESET_PICKS[name];
+    people[name] = {
+      picks: preset
+        ? {
+            r16: preset.r16.slice(),
+            qf: preset.qf.slice(),
+            sf: preset.sf.slice(),
+            final: preset.final.slice(),
+            champion: preset.champion.slice(),
+          }
+        : emptyPicks(),
+    };
+  });
+  return {
+    people,
+    results: emptyResults(),
+    scores: emptyScores(),
+    order: DEFAULT_PEOPLE.slice(),
+    seedVersion: SEED_VERSION,
+  };
+}
+
+function isPicksEmpty(picks) {
+  return ROUND_KEYS.every((k) => (picks[k] || []).every((v) => !normalizeTeam(v)));
+}
+
+function mergeSeeds(saved) {
+  // Bring forward any new people or preset picks added in code since this
+  // state was last saved, without overwriting picks the user already edited.
+  const next = {
+    ...saved,
+    people: { ...saved.people },
+    order: saved.order ? saved.order.slice() : [],
+    scores: saved.scores || emptyScores(),
+  };
+
+  DEFAULT_PEOPLE.forEach((name) => {
+    if (!next.order.includes(name)) {
+      next.order.push(name);
+    }
+    if (!next.people[name]) {
+      const preset = PRESET_PICKS[name];
+      next.people[name] = {
+        picks: preset
+          ? {
+              r16: preset.r16.slice(),
+              qf: preset.qf.slice(),
+              sf: preset.sf.slice(),
+              final: preset.final.slice(),
+              champion: preset.champion.slice(),
+            }
+          : emptyPicks(),
+      };
+    } else {
+      const preset = PRESET_PICKS[name];
+      const existingPicks = next.people[name].picks || emptyPicks();
+      if (preset && isPicksEmpty(existingPicks)) {
+        next.people[name] = {
+          ...next.people[name],
+          picks: {
+            r16: preset.r16.slice(),
+            qf: preset.qf.slice(),
+            sf: preset.sf.slice(),
+            final: preset.final.slice(),
+            champion: preset.champion.slice(),
+          },
+        };
+      }
+    }
+  });
+
+  next.seedVersion = SEED_VERSION;
+
+  // Remove stale placeholder entries (e.g. old "Player N" names) that are no
+  // longer in DEFAULT_PEOPLE and were never actually filled in by the user.
+  Object.keys(next.people).forEach((name) => {
+    if (!DEFAULT_PEOPLE.includes(name) && isPicksEmpty(next.people[name].picks || emptyPicks())) {
+      delete next.people[name];
+    }
+  });
+  next.order = next.order.filter(
+    (name) => DEFAULT_PEOPLE.includes(name) || next.people[name]
+  );
+
+  return next;
+}
+
+function normalizeTeam(t) {
+  return (t || "").trim().toLowerCase();
+}
+
+// ---------- Flags ----------
+
+const FLAG_MAP = {
+  germany: "🇩🇪",
+  france: "🇫🇷",
+  canada: "🇨🇦",
+  netherlands: "🇳🇱",
+  portugal: "🇵🇹",
+  spain: "🇪🇸",
+  usa: "🇺🇸",
+  "united states": "🇺🇸",
+  senegal: "🇸🇳",
+  brazil: "🇧🇷",
+  norway: "🇳🇴",
+  ecuador: "🇪🇨",
+  england: "🇬🇧",
+  argentina: "🇦🇷",
+  australia: "🇦🇺",
+  algeria: "🇩🇿",
+  colombia: "🇨🇴",
+  belgium: "🇧🇪",
+  croatia: "🇭🇷",
+  mexico: "🇲🇽",
+  switzerland: "🇨🇭",
+  ghana: "🇬🇭",
+  "south africa": "🇿🇦",
+  morocco: "🇲🇦",
+  egypt: "🇪🇬",
+  japan: "🇯🇵",
+  "south korea": "🇰🇷",
+  korea: "🇰🇷",
+  uruguay: "🇺🇾",
+  paraguay: "🇵🇾",
+  sweden: "🇸🇪",
+  denmark: "🇩🇰",
+  croatiaa: "🇭🇷",
+  poland: "🇵🇱",
+  italy: "🇮🇹",
+  wales: "🇬🇧",
+  scotland: "🇬🇧",
+  serbia: "🇷🇸",
+  tunisia: "🇹🇳",
+  nigeria: "🇳🇬",
+  cameroon: "🇨🇲",
+  iran: "🇮🇷",
+  "saudi arabia": "🇸🇦",
+  qatar: "🇶🇦",
+  panama: "🇵🇦",
+  jamaica: "🇯🇲",
+  "costa rica": "🇨🇷",
+  chile: "🇨🇱",
+  peru: "🇵🇪",
+  venezuela: "🇻🇪",
+  bolivia: "🇧🇴",
+  turkey: "🇹🇷",
+  ukraine: "🇺🇦",
+  austria: "🇦🇹",
+  "new zealand": "🇳🇿",
+  china: "🇨🇳",
+  india: "🇮🇳",
+  "bosnia and herzegovina": "🇧🇦",
+  bosnia: "🇧🇦",
+  "ivory coast": "🇨🇮",
+  "cote d'ivoire": "🇨🇮",
+  "dr congo": "🇨🇩",
+  "democratic republic of congo": "🇨🇩",
+  "cape verde": "🇨🇻",
+};
+
+function flagFor(team) {
+  const key = normalizeTeam(team);
+  return FLAG_MAP[key] || "🏳️";
+}
+
+// ---------- Scoring ----------
+
+function scoreForPerson(picks, results) {
+  let total = 0;
+  const breakdown = {};
+  const hitMap = {}; // roundKey -> array of booleans aligned with picks array
+  const decidedMap = {}; // roundKey -> array of booleans, per-slot result-entered status
+  for (const round of ROUNDS) {
+    const picksArr = picks[round.key] || [];
+    const resultsArr = results[round.key] || [];
+    const resultSet = new Set(
+      resultsArr.filter((r) => normalizeTeam(r)).map(normalizeTeam)
+    );
+    const resultsDecided = resultsArr.some((r) => normalizeTeam(r));
+    let roundScore = 0;
+    let roundHits = 0;
+    const hits = picksArr.map((p) => {
+      const np = normalizeTeam(p);
+      const isHit = !!(np && resultSet.has(np));
+      if (isHit) {
+        roundScore += round.points;
+        roundHits += 1;
+      }
+      return isHit;
+    });
+    // A specific game is "decided" only once its own result slot is filled
+    // in (not just any slot in the round) — used to color individual cards.
+    const decidedSlots = picksArr.map((p, idx) => normalizeTeam(resultsArr[idx]) !== "");
+    hitMap[round.key] = hits;
+    decidedMap[round.key] = decidedSlots;
+    breakdown[round.key] = {
+      score: roundScore,
+      hits: roundHits,
+      total: picksArr.filter(normalizeTeam).length,
+      decided: resultsDecided,
+    };
+    total += roundScore;
+  }
+  return { total, breakdown, hitMap, decidedMap };
+}
+
+// ---------- Storage helpers ----------
+
+async function loadState() {
+  try {
+    const res = await window.storage.get(STORAGE_KEY, true);
+    if (res && res.value) {
+      const parsed = JSON.parse(res.value);
+      return parsed;
+    }
+  } catch (e) {
+    // not found or error - fall through to default
+  }
+  return null;
+}
+
+async function saveState(state) {
+  try {
+    await window.storage.set(STORAGE_KEY, JSON.stringify(state), true);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// ---------- UI atoms ----------
+
+function RoundPill({ round }) {
+  return (
+    <span
+      style={{
+        fontSize: 11,
+        fontWeight: 700,
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+        padding: "3px 8px",
+        borderRadius: 999,
+        background: "rgba(212,168,67,0.15)",
+        color: "#8a6411",
+        border: "1px solid rgba(212,168,67,0.35)",
+      }}
+    >
+      {round.label} · {round.points} pts
+    </span>
+  );
+}
+
+function RankBadge({ rank }) {
+  const palettes = {
+    1: { bg: "#D4A843", fg: "#3a2a05", border: "#b8902f" },
+    2: { bg: "#C7CBD1", fg: "#33363b", border: "#a9adb4" },
+    3: { bg: "#CE9B6F", fg: "#3a2310", border: "#b07f52" },
+  };
+  const p = palettes[rank];
+  if (p) {
+    return (
+      <div
+        style={{
+          width: 34,
+          height: 34,
+          borderRadius: "50%",
+          background: p.bg,
+          border: `1.5px solid ${p.border}`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "'Oswald', var(--font-sans, sans-serif)",
+          fontWeight: 700,
+          fontSize: 16,
+          color: p.fg,
+          flexShrink: 0,
+        }}
+      >
+        {rank}
+      </div>
+    );
+  }
+  return (
+    <div
+      style={{
+        width: 34,
+        height: 34,
+        borderRadius: "50%",
+        background: "transparent",
+        border: "1.5px solid #d8d4c8",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontFamily: "'Oswald', var(--font-sans, sans-serif)",
+        fontWeight: 600,
+        fontSize: 14,
+        color: "#8a8676",
+        flexShrink: 0,
+      }}
+    >
+      {rank}
+    </div>
+  );
+}
+
+// ---------- Leaderboard ----------
+
+function Leaderboard({ people, results, order, onSelect, onReorder }) {
+  const rows = order.map((name) => {
+    const picks = people[name]?.picks || emptyPicks();
+    const { total, breakdown } = scoreForPerson(picks, results);
+    return { name, total, breakdown };
+  });
+  rows.sort((a, b) => b.total - a.total);
+
+  const max = Math.max(1, ...rows.map((r) => r.total));
+
+  return (
+    <div
+      style={{
+        background: "#FBF8F1",
+        border: "1px solid #E4DFD0",
+        borderRadius: 14,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          padding: "16px 20px",
+          borderBottom: "1px solid #E4DFD0",
+          background: "#16382B",
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+        }}
+      >
+        <h2
+          style={{
+            margin: 0,
+            fontFamily: "'Oswald', var(--font-sans, sans-serif)",
+            fontWeight: 700,
+            fontSize: 20,
+            letterSpacing: "0.03em",
+            color: "#F5EFDD",
+            textTransform: "uppercase",
+          }}
+        >
+          Leaderboard
+        </h2>
+        <span style={{ fontSize: 12, color: "#B9CDB9", fontWeight: 500 }}>
+          
+        </span>
+      </div>
+
+      <div>
+        {rows.map((row, idx) => {
+          const rank = idx + 1;
+          const pct = (row.total / max) * 100;
+          return (
+            <button
+              key={row.name}
+              onClick={() => onSelect(row.name)}
+              style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                gap: 14,
+                padding: "12px 20px",
+                background: "transparent",
+                border: "none",
+                borderBottom: "1px solid #ECE7D8",
+                cursor: "pointer",
+                textAlign: "left",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "#F2EDDD")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <RankBadge rank={rank} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "baseline",
+                    marginBottom: 5,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontWeight: 600,
+                      fontSize: 15,
+                      color: "#2C2B23",
+                    }}
+                  >
+                    {row.name}
+                  </span>
+                  <span
+                    style={{
+                      fontFamily: "'Oswald', var(--font-sans, sans-serif)",
+                      fontWeight: 700,
+                      fontSize: 19,
+                      color: "#16382B",
+                    }}
+                  >
+                    {row.total}
+                    <span style={{ fontSize: 11, fontWeight: 500, color: "#8a8676", marginLeft: 3 }}>
+                      pts
+                    </span>
+                  </span>
+                </div>
+                <div
+                  style={{
+                    height: 6,
+                    borderRadius: 3,
+                    background: "#E4DFD0",
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      height: "100%",
+                      width: `${pct}%`,
+                      background:
+                        rank === 1
+                          ? "#D4A843"
+                          : "#5C7A60",
+                      borderRadius: 3,
+                      transition: "width 0.4s ease",
+                    }}
+                  />
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Bracket view (read-only) for one person ----------
+
+const ROUND_SIZES = { r16: 16, qf: 8, sf: 4, final: 2, champion: 1 };
+
+// Derive head-to-head games for a round from the *previous* round's picks.
+// Adjacent pairs in the previous round's pick list represent one bracket game;
+// the corresponding pick in the current round is that game's projected winner.
+function deriveGames(prevPicks, prevHits, currPicks, currHits, currDecidedSlots, currScores) {
+  const games = [];
+  const n = prevPicks.length;
+  for (let i = 0; i < n; i += 2) {
+    const teamA = prevPicks[i];
+    const teamB = prevPicks[i + 1];
+    const gameIdx = i / 2;
+    const pick = currPicks[gameIdx];
+    games.push({
+      teamA,
+      teamB,
+      pick,
+      pickIsHit: currHits ? currHits[gameIdx] : false,
+      decided: currDecidedSlots ? currDecidedSlots[gameIdx] : false,
+      score: currScores ? currScores[gameIdx] : "",
+    });
+  }
+  return games;
+}
+
+function TeamRow({ team, isWinner, isHit, decided, showStatus, goals }) {
+  const empty = !normalizeTeam(team);
+  const showGoals = decided && goals !== undefined && goals !== null && goals !== "";
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "6px 10px",
+        borderRadius: 7,
+        background: isWinner && !empty ? "#fff" : "transparent",
+        border: isWinner && !empty ? "1px solid #DCD6C4" : "1px solid transparent",
+      }}
+    >
+      <span style={{ fontSize: 15, lineHeight: 1, flexShrink: 0 }}>
+        {empty ? "—" : flagFor(team)}
+      </span>
+      <span
+        style={{
+          flex: 1,
+          fontSize: 13,
+          fontWeight: isWinner && !empty ? 600 : 400,
+          color: empty ? "#a8a392" : isWinner ? "#2C2B23" : "#8a8676",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {empty ? "TBD" : team}
+      </span>
+      {showGoals && (
+        <span
+          style={{
+            width: 18,
+            display: "inline-flex",
+            justifyContent: "flex-end",
+            fontSize: 13,
+            fontWeight: isWinner ? 700 : 500,
+            color: isWinner ? "#16382B" : "#a8a392",
+            flexShrink: 0,
+          }}
+        >
+          {goals}
+        </span>
+      )}
+      <div
+        style={{
+          width: 18,
+          display: "flex",
+          justifyContent: "center",
+          flexShrink: 0,
+        }}
+      >
+        {isWinner && showStatus && !empty && (
+        decided ? (
+          <span
+            style={{
+              width: 18,
+              height: 18,
+              borderRadius: "50%",
+              background: isHit ? "#E1F5EE" : "#FCEBEB",
+              color: isHit ? "#085041" : "#A32D2D",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+            }}
+          >
+          
+            <i
+              className={isHit ? "ti ti-check" : "ti ti-x"}
+              style={{ fontSize: 12 }}
+              aria-hidden="true"
+            ></i>
+          </span>
+        ) : (
+          <i
+            className="ti ti-clock"
+            style={{ fontSize: 13, color: "#a8a392", flexShrink: 0 }}
+            aria-hidden="true"
+          ></i>
+        )
+      )}
+      </div>
+    </div>
+  );
+}
+
+function parseScore(scoreStr) {
+  if (!scoreStr || typeof scoreStr !== "string") return null;
+  const parts = scoreStr.split(/[-:]/).map((s) => s.trim());
+  if (parts.length !== 2) return null;
+  return parts;
+}
+
+function GameCard({ teamA, teamB, pick, pickIsHit, decided, points, score }) {
+  const np = normalizeTeam(pick);
+  const pickIsA = np && normalizeTeam(teamA) === np;
+  const pickIsB = np && normalizeTeam(teamB) === np;
+  const parsed = parseScore(score);
+
+  return (
+    <div
+      style={{
+        background: "#fff",
+        border: "1px solid #DCD6C4",
+        borderRadius: 9,
+        padding: "8px 8px",
+      }}
+    >
+      <TeamRow
+        team={teamA}
+        isWinner={pickIsA}
+        isHit={pickIsHit}
+        decided={decided}
+        showStatus
+        goals={parsed ? parsed[0] : undefined}
+      />
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "2px 10px",
+        }}
+      >
+        <span style={{ fontSize: 10, color: "#c2bca8", fontWeight: 600, letterSpacing: "0.04em" }}>
+          VS
+        </span>
+      </div>
+      <TeamRow
+        team={teamB}
+        isWinner={pickIsB}
+        isHit={pickIsHit}
+        decided={decided}
+        showStatus
+        goals={parsed ? parsed[1] : undefined}
+      />
+      {decided && normalizeTeam(pick) && (
+        <div
+          style={{
+            marginTop: 4,
+            paddingTop: 6,
+            borderTop: "1px solid #ECE7D8",
+            fontSize: 11,
+            fontWeight: 700,
+            color: pickIsHit ? "#3B6D11" : "#A32D2D",
+            textAlign: "right",
+            paddingRight: 4,
+          }}
+        >
+          {pickIsHit ? `+${points} PTS` : "0 PTS"}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BracketView({ name, picks, breakdown, hitMap, decidedMap, scores }) {
+  return (
+    <div
+      style={{
+        background: "#FBF8F1",
+        border: "1px solid #E4DFD0",
+        borderRadius: 14,
+        padding: 20,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "nowrap",
+          gap: 16,
+          overflowX: "auto",
+          paddingBottom: 4,
+          WebkitOverflowScrolling: "touch",
+        }}
+      >
+        {ROUNDS.map((round, roundIdx) => {
+          const prevRound = roundIdx > 0 ? ROUNDS[roundIdx - 1] : null;
+          const currPicks = picks[round.key];
+          const currHits = hitMap ? hitMap[round.key] : null;
+          const currDecidedSlots = decidedMap ? decidedMap[round.key] : null;
+          const currScores = scores ? scores[round.key] : null;
+
+          const games = !prevRound
+            ? currPicks.map((pick, idx) => {
+                const matchup = R32_MATCHUPS[idx] || [pick, ""];
+                return {
+                  teamA: matchup[0],
+                  teamB: matchup[1],
+                  pick,
+                  pickIsHit: currHits ? currHits[idx] : false,
+                  decided: currDecidedSlots ? currDecidedSlots[idx] : false,
+                  score: currScores ? currScores[idx] : "",
+                };
+              })
+            : deriveGames(
+                picks[prevRound.key],
+                hitMap ? hitMap[prevRound.key] : null,
+                currPicks,
+                currHits,
+                currDecidedSlots,
+                currScores
+              );
+
+          return (
+            <div key={round.key} style={{ flex: "0 0 200px", width: 200 }}>
+              <div style={{ marginBottom: 10 }}>
+                <RoundPill round={round} />
+                {breakdown && (
+                  <div style={{ marginTop: 4, fontSize: 12, color: "#8a8676" }}>
+                    {breakdown[round.key].hits}/{ROUND_SIZES[round.key]} correct ·{" "}
+                    <span style={{ fontWeight: 600, color: "#16382B" }}>
+                      {breakdown[round.key].score} pts
+                    </span>
+                  </div>
+                )}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {games.map((g, idx) => (
+                  <GameCard
+                    key={idx}
+                    teamA={g.teamA}
+                    teamB={g.teamB}
+                    pick={g.pick}
+                    pickIsHit={g.pickIsHit}
+                    decided={g.decided}
+                    points={round.points}
+                    score={g.score}
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Results editor ----------
+
+function ResultsEditor({ results, scores, onChangeResults, onChangeScores }) {
+  const handleResultChange = (roundKey, idx, value) => {
+    const next = { ...results, [roundKey]: results[roundKey].slice() };
+    next[roundKey][idx] = value;
+    onChangeResults(next);
+  };
+
+  const handleScoreChange = (roundKey, idx, value) => {
+    const next = { ...scores, [roundKey]: scores[roundKey].slice() };
+    next[roundKey][idx] = value;
+    onChangeScores(next);
+  };
+
+  return (
+    <div
+      style={{
+        background: "#16382B",
+        borderRadius: 14,
+        padding: 20,
+      }}
+    >
+      <div style={{ marginBottom: 14 }}>
+        <h3
+          style={{
+            margin: 0,
+            fontFamily: "'Oswald', var(--font-sans, sans-serif)",
+            fontWeight: 700,
+            fontSize: 16,
+            color: "#F5EFDD",
+            textTransform: "uppercase",
+            letterSpacing: "0.03em",
+          }}
+        >
+          Actual results
+        </h3>
+        <p style={{ margin: "4px 0 0", fontSize: 12.5, color: "#B9CDB9" }}>
+          Enter the team that won each game, plus the final score. Leaderboard updates automatically.
+        </p>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+        {ROUNDS.map((round) => (
+          <div key={round.key} style={{ flex: "1 1 180px", minWidth: 160 }}>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: "0.04em",
+                textTransform: "uppercase",
+                color: "#D4A843",
+                marginBottom: 8,
+              }}
+            >
+              {round.label}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {results[round.key].map((val, idx) => (
+                <div key={idx} style={{ display: "flex", gap: 4 }}>
+                  <div style={{ position: "relative", flex: 1 }}>
+                    <span
+                      style={{
+                        position: "absolute",
+                        left: 10,
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        fontSize: 14,
+                        pointerEvents: "none",
+                        opacity: normalizeTeam(val) ? 1 : 0.3,
+                      }}
+                    >
+                      {normalizeTeam(val) ? flagFor(val) : "🏳️"}
+                    </span>
+                    <input
+                      value={val}
+                      onChange={(e) => handleResultChange(round.key, idx, e.target.value)}
+                      placeholder={round.key === "champion" ? "Champion" : `Team ${idx + 1}`}
+                      style={{
+                        width: "100%",
+                        boxSizing: "border-box",
+                        fontSize: 13,
+                        padding: "7px 10px 7px 32px",
+                        borderRadius: 7,
+                        border: "1px solid rgba(245,239,221,0.25)",
+                        background: "rgba(255,255,255,0.06)",
+                        color: "#F5EFDD",
+                        fontWeight: round.key === "champion" ? 600 : 400,
+                      }}
+                    />
+                  </div>
+                  <input
+                    value={scores[round.key][idx] || ""}
+                    onChange={(e) => handleScoreChange(round.key, idx, e.target.value)}
+                    placeholder="3-1"
+                    title="Final score, e.g. 3-1"
+                    style={{
+                      width: 52,
+                      boxSizing: "border-box",
+                      fontSize: 12,
+                      padding: "7px 6px",
+                      borderRadius: 7,
+                      border: "1px solid rgba(245,239,221,0.25)",
+                      background: "rgba(255,255,255,0.06)",
+                      color: "#F5EFDD",
+                      textAlign: "center",
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Main App ----------
+
+function App() {
+  const [state, setState] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(null);
+  const [view, setView] = useState("leaderboard"); // leaderboard | bracket | results
+  const [saveStatus, setSaveStatus] = useState("idle"); // idle | saving | saved | error
+
+  useEffect(() => {
+    (async () => {
+      const loaded = await loadState();
+      if (!loaded) {
+        const fresh = defaultState();
+        setState(fresh);
+        await saveState(fresh);
+      } else if ((loaded.seedVersion || 0) < SEED_VERSION) {
+        const merged = mergeSeeds(loaded);
+        setState(merged);
+        await saveState(merged);
+      } else {
+        setState(loaded);
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  const persist = useCallback(async (next) => {
+    setState(next);
+    setSaveStatus("saving");
+    const ok = await saveState(next);
+    setSaveStatus(ok ? "saved" : "error");
+    setTimeout(() => setSaveStatus("idle"), 1200);
+  }, []);
+
+  if (loading || !state) {
+    return (
+      <div
+        style={{
+          padding: "3rem 1rem",
+          textAlign: "center",
+          color: "#8a8676",
+          fontFamily: "var(--font-sans, sans-serif)",
+        }}
+      >
+        Loading bracket tracker…
+      </div>
+    );
+  }
+
+  const handleResultsChange = (newResults) => {
+    persist({ ...state, results: newResults });
+  };
+
+  const handleScoresChange = (newScores) => {
+    persist({ ...state, scores: newScores });
+  };
+
+  const selectedPicks = selected ? state.people[selected]?.picks || emptyPicks() : null;
+  const selectedScoring = selected ? scoreForPerson(selectedPicks, state.results) : null;
+
+  return (
+    <div
+      style={{
+        fontFamily: "var(--font-sans, 'Inter', sans-serif)",
+        background: "#F0EBDC",
+        minHeight: "100%",
+        padding: "0",
+      }}
+    >
+      <link
+        rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;700&display=swap"
+      />
+      <link
+        rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/2.44.0/iconfont/tabler-icons.min.css"
+      />
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "24px 16px 48px" }}>
+        {/* Header */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: 20,
+            flexWrap: "wrap",
+            gap: 10,
+          }}
+        >
+          <div>
+            <h1
+              style={{
+                margin: 0,
+                fontFamily: "'Oswald', var(--font-sans, sans-serif)",
+                fontWeight: 700,
+                fontSize: 28,
+                color: "#16382B",
+                letterSpacing: "0.01em",
+              }}
+            >
+              World Cup Bracket Challenge
+            </h1>
+            <p style={{ margin: "4px 0 0", fontSize: 13, color: "#6b6754" }}>
+              20 / 30 / 40 / 75 / 100 pts for R32, R16, QF, SF, Final
+            </p>
+          </div>
+          <div
+            style={{
+              fontSize: 12,
+              color: saveStatus === "error" ? "#A32D2D" : "#6b6754",
+              minWidth: 70,
+              textAlign: "right",
+            }}
+          >
+            {saveStatus === "saving" && "Saving…"}
+            {saveStatus === "saved" && "Saved"}
+            {saveStatus === "error" && "Save failed"}
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div
+          style={{
+            display: "flex",
+            gap: 4,
+            marginBottom: 20,
+            borderBottom: "1px solid #E4DFD0",
+          }}
+        >
+          {[
+            { key: "leaderboard", label: "Leaderboard" },
+            { key: "bracket", label: "Brackets" },
+            { key: "results", label: "Results" },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => {
+                if (tab.key !== "results") {
+                  setView(tab.key);
+                  return;
+                }
+
+                const entered = window.prompt("Enter admin password:");
+
+                if (entered === RESULTS_PASSWORD) {
+                  setView("results");
+                } else if (entered !== null) {
+                  alert("Incorrect password.");
+                }
+              }}
+              style={{
+                padding: "10px 16px",
+                fontSize: 14,
+                fontWeight: 600,
+                background: "transparent",
+                border: "none",
+                borderBottom:
+                  view === tab.key ? "2.5px solid #16382B" : "2.5px solid transparent",
+                color: view === tab.key ? "#16382B" : "#8a8676",
+                cursor: "pointer",
+                marginBottom: -1,
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {view === "leaderboard" && (
+          <Leaderboard
+            people={state.people}
+            results={state.results}
+            order={state.order}
+            onSelect={(name) => {
+              setSelected(name);
+              setView("bracket");
+            }}
+          />
+        )}
+
+        {view === "bracket" && (
+          <div>
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                marginBottom: 16,
+                flexWrap: "wrap",
+              }}
+            >
+              {state.order.map((name) => (
+                <button
+                  key={name}
+                  onClick={() => setSelected(name)}
+                  style={{
+                    padding: "7px 14px",
+                    borderRadius: 999,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    border:
+                      selected === name
+                        ? "1.5px solid #16382B"
+                        : "1px solid #DCD6C4",
+                    background: selected === name ? "#16382B" : "#fff",
+                    color: selected === name ? "#F5EFDD" : "#5b5742",
+                    cursor: "pointer",
+                  }}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+            {selected ? (
+              <div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    justifyContent: "space-between",
+                    marginBottom: 12,
+                  }}
+                >
+                  <h2
+                    style={{
+                      margin: 0,
+                      fontFamily: "'Oswald', var(--font-sans, sans-serif)",
+                      fontWeight: 700,
+                      fontSize: 20,
+                      color: "#16382B",
+                    }}
+                  >
+                    {selected}
+                  </h2>
+                  <span
+                    style={{
+                      fontFamily: "'Oswald', var(--font-sans, sans-serif)",
+                      fontWeight: 700,
+                      fontSize: 20,
+                      color: "#16382B",
+                    }}
+                  >
+                    {selectedScoring.total} pts
+                  </span>
+                </div>
+                <BracketView
+                  name={selected}
+                  picks={selectedPicks}
+                  breakdown={selectedScoring.breakdown}
+                  hitMap={selectedScoring.hitMap}
+                  decidedMap={selectedScoring.decidedMap}
+                  scores={state.scores}
+                />
+              </div>
+            ) : (
+              <p style={{ color: "#8a8676", fontSize: 14 }}>
+                Select a person above to view their bracket.
+              </p>
+            )}
+          </div>
+        )}
+
+        {view === "results" && (
+          <ResultsEditor
+            results={state.results}
+            scores={state.scores}
+            onChangeResults={handleResultsChange}
+            onChangeScores={handleScoresChange}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
